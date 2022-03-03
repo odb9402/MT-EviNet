@@ -3,13 +3,15 @@ import torch
 import argparse
 import os
 import sys
+sys.path.append('..')
+from mtevi.mtevi import *
+from mtevi.utils import *
 import pickle
-
+import pdb
 from BayesianDTI.utils import *
 from torch.utils.data import Dataset, DataLoader
 from BayesianDTI.datahelper import *
 from BayesianDTI.model import *
-from BayesianDTI.loss import *
 from BayesianDTI.predictor import *
 from scipy.stats import t
 from BayesianDTI.utils import confidence_interval
@@ -28,7 +30,7 @@ parser.add_argument("--type", default='None',
                     help="Davis or Kiba; dataset select.")
 parser.add_argument("--abl", action='store_true',
                     help="Use the vanilla MSE")
-parser.add_argument("--cuda", type=int, default=1, help="cuda device number")
+parser.add_argument("--cuda", type=int, default=0, help="cuda device number")
 
 
 args = parser.parse_args()
@@ -81,7 +83,7 @@ device = 'cuda:{}'.format(args.cuda)
 
 dti_model = EvidentialDeepDTA(dropout=False).to(device)
 
-objective_fn = MarginalLikelihoodLoss().to(device)
+objective_fn = EvidentialnetMarginalLikelihood().to(device)
 objective_mse = torch.nn.MSELoss(reduction='none')
 
 regularizer = EvidenceRegularizer(factor=0.001).to(device)
@@ -103,11 +105,11 @@ for epoch in range(args.epochs):
         opt.zero_grad()
         y = y.unsqueeze(1).to(device)
         gamma, nu, alpha, beta = dti_model(d.to(device), p.to(device))
-        c = get_mse_coef_test(gamma, nu, alpha, beta, y, batch_reduce='min')
         if args.abl: 
             (objective_mse(gamma,y)*0.1).mean().backward(retain_graph=True)
         else:
-            (objective_mse(gamma,y)*c).mean().backward(retain_graph=True)
+            modified_mse(gamma, nu, alpha, beta, y).mean().backward(retain_graph=True)
+        
         grad_mse = get_gradient_vector(dti_model)
         opt.zero_grad()
         
@@ -117,15 +119,15 @@ for epoch in range(args.epochs):
         
         cos_sim = sim(grad_mse, grad_nll).item()
         cos_sims.append(cos_sim)
-        print("[{}/10000] Cos sim :[{:.5f}], mean coef: [{:.5f}]".format(steps,cos_sim,c.mean().item()))
+        print("[{}/10000] Cos sim :[{:.5f}]".format(steps,cos_sim))
         ###############################################################
         #### NLL training
         loss = objective_fn(gamma, nu, alpha, beta, y).mean()
-        c = get_mse_coef_test(gamma, nu, alpha, beta, y)
         if args.abl:
-            c = 1.0
-        mse = objective_mse(gamma, y)
-        loss += (mse*c).mean()
+            mse = objective_mse(gamma, y)
+        else:
+            mse = modified_mse(gamma, nu, alpha, beta, y)
+        loss += (mse).mean()
             
         loss.backward()
         ###############################################################

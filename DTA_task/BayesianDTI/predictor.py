@@ -70,58 +70,10 @@ class VanillaDTIPredictor(DTIPredictor):
             self.mu_pred.append(prediction.view(-1).detach().cpu().numpy())
             self.mu_Y.append(y.view(-1).detach().cpu().numpy())
     
-    
-class StudentDTIPredictor(DTIPredictor):
-    """
-    Make prediction with Student model sampling.
-    
-    Args:
-        dataloader(Torch.utils.dataloader)
-        model(Torch.nn.Module) : Student model
-        sample_nbr(Int)
-        
-    return:
-        mu(np.array)
-        std(np.array)
-        mu_Y(np.array)
-        std_Y(np.array)
-    """
-    def eval_loop(self, dataloader, model, **kwargs):
-        for d, p, mu, std, _ in dataloader:
-            prediction_mu, prediction_std = model(d.to(device),p.to(device), **kwargs)
-            self.mu_Y.append(mu.view(-1).detach().cpu().numpy())
-            self.std_Y.append(std.view(-1).detach().cpu().numpy())
-            self.mu_pred.append(prediction_mu.detach().cpu().numpy().flatten())
-            self.std_pred.append(prediction_std.detach().cpu().numpy().flatten())
 
-            
-class BayesDTIPredictor(DTIPredictor):
+class EviNetDTIPredictor(DTIPredictor):
     """
-    Prediction class for BNN models, model.EpistemicBayes().
-    """
-    def eval_loop(self, dataloader, model, **kwargs):
-        for d, p, mu in dataloader:
-            mean, std = model.mfvi_forward((d.to(device), p.to(device)), **kwargs)
-            self.mu_Y.append(mu.view(-1).detach().cpu().numpy())
-            self.mu_pred.append(mean.detach().cpu().numpy().flatten())
-            self.std_pred.append(std.detach().cpu().numpy().flatten())
-
-            
-class ApproximateDTIPredictor(DTIPredictor):
-    def eval_loop(self, dataloader, model, **kwargs):
-        model.eval()
-        predictions = []
-        labels = []
-        for d, p, y in dataloader:
-            prediction, std = model(d.to(device), p.to(device), **kwargs)
-            self.mu_pred.append(prediction.view(-1).detach().cpu().numpy())
-            self.std_pred.append(std.detach().cpu().numpy().flatten())
-            self.mu_Y.append(y.view(-1).detach().cpu().numpy().flatten())
-    
-
-class PriorNetDTIPredictor(DTIPredictor):
-    """
-    Predictor class for the PriorNet(Evidential network).
+    Predictor class for the Evidential network.
     
     
     self.prediction(dataloader, model)

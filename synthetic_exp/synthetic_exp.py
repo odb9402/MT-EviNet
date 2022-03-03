@@ -1,15 +1,19 @@
-from sklearn.datasets import make_regression, make_friedman3, load_boston
-from sklearn.model_selection import train_test_split
-from scipy.stats import zscore
+import sys
+sys.path.append('..')
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.style.use('ggplot')
 import numpy as np
-import pandas as pd
 import torch
-from utils import *
+from mtevi.mtevi import *
+from mtevi.utils import *
 from models import *
 import math
+
+use_gpu = lambda x=True: torch.set_default_tensor_type(torch.cuda.FloatTensor 
+                                             if torch.cuda.is_available() and x 
+                                             else torch.FloatTensor)
+#use_gpu()
 
 def plot_fig(model, output='mtnet_test.png'):
     true_y = []
@@ -64,16 +68,9 @@ def plot_fig(model, output='mtnet_test.png'):
 
     plt.tight_layout()
     plt.savefig(output)
-    
-torch.cuda.set_device('cuda:1')
 
-use_gpu = lambda x=True: torch.set_default_tensor_type(torch.cuda.FloatTensor 
-                                             if torch.cuda.is_available() and x 
-                                             else torch.FloatTensor)
-use_gpu()
 
 np.random.seed(0)
-
 X = np.concatenate((np.linspace(-3, 6, 1950), np.linspace(6, 10, 50)))
 rand_num = [6,3]
 Y = np.sin(X*4)**3 + (X**2)/10 + np.random.randn(*X.shape)*0.1 + 2*np.random.normal(scale=np.abs(7-np.abs(X))*0.05)
@@ -108,14 +105,16 @@ test_x = np.linspace(-3,10,1000)
 
 fig = plt.figure(figsize=(10,10))
 plt.scatter(X,Y, marker='.')
-plt.savefig("synthetic/raw_data.png")
+plt.savefig("synthetic_result/raw_data.png")
+
+##################################################
 ### MT evi net  ##################################
 ##################################################
 ##################################################
 model = EvidentialNetwork(dim)
 objective = EvidentialnetMarginalLikelihood()
 objective_mse = torch.nn.MSELoss(reduction='none')
-reg = EvidenceRegularizer(factor=0.001)
+reg = EvidenceRegularizer(factor=0.0001)
 
 gamma_history = []
 nu_history = []
@@ -147,8 +146,7 @@ for epoch in range(500):
         nll += (reg(gamma, nu, alpha, beta, y)).mean()
         total_nll += nll.item()
 
-        c = get_mse_coef_test(gamma, nu, alpha, beta, y)
-        mse = (objective_mse(gamma, y.float())*c).mean()
+        mse = modified_mse(gamma, nu, alpha, beta, y).mean() 
         total_mse += mse.item()
         loss = nll + mse
         loss.backward()
@@ -179,7 +177,7 @@ for epoch in range(500):
     total_nll = 0.
     total_valid_nll = 0.
     scheduler.step()
-plot_fig(model, "synthetic/mtnet.png")
+plot_fig(model, "synthetic_result/mtnet.png")
 ##########################################################################
 ######## GP regression    ################################################
 ##########################################################################
@@ -225,7 +223,7 @@ conf = confidence_interval(np.array(pred_y),
 plt.fill_between(np.linspace(-3,10,1000), conf[0], conf[1], color='red', alpha=.15)
 
 plt.tight_layout()
-plt.savefig("synthetic/gp_regression.png")
+plt.savefig("synthetic_result/gp_regression.png")
 ##################################################
 ### vanilla evi net  #############################
 ##################################################
@@ -334,7 +332,7 @@ conf = confidence_interval(np.array(pred_y),
 plt.fill_between(np.linspace(-3,10,1000), conf[0], conf[1], color='red', alpha=.15)
 
 plt.tight_layout()
-plt.savefig("synthetic/evinet.png")
+plt.savefig("synthetic_result/evinet.png")
 ##########################################################################
 ##### MC-Dropout #########################################################
 ##########################################################################
@@ -441,4 +439,4 @@ conf = confidence_interval(np.array(pred_y),
 plt.fill_between(np.linspace(-3,10,1000), conf[0], conf[1], color='red', alpha=.15)
 
 plt.tight_layout()
-plt.savefig("synthetic/mcdrop.png")
+plt.savefig("synthetic_result/mcdrop.png")

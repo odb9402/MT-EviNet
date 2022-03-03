@@ -6,15 +6,11 @@ This source includs two types of classes or functions.
     or even confidence intervals and ECE, which are uncertainty measures.
     
 2. Some plotting functions.
-
-3. Multi-task learning utility functions.
-    These functions usually modify gradients of a model itself.
-    This adjusting gradient is commonly essential task to produce multi-task learning.
-
 """
 from lifelines.utils import concordance_index
 from scipy import stats
 from scipy.stats import t, norm, gamma
+from scipy.special import logsumexp
 from abc import ABC, abstractmethod
 import numpy as np
 import torch
@@ -31,259 +27,26 @@ def clean_up_grad(tensors):
         t.grad.data.zero_()
 
 
-def get_mse_coef_test(gamma, nu, alpha, beta, y):
-    alpha_eff = check_mse_efficiency_alpha(gamma, nu, alpha, beta, y)
-    nu_eff = check_mse_efficiency_nu(gamma, nu, alpha, beta, y)
-    delta = (gamma - y).abs()
-    min_bound = torch.min(nu_eff, alpha_eff).min()
-    c = (min_bound.sqrt()/delta).detach()
-    return torch.clip(c, min=0.0, max=1.).detach()
-
-
-def get_multi_obj_coef(model, objective_a, objective_b, a_args, b_args, **kwargs):
-    """
-    Get multi-objective optimization coefficient for two loss functions.
-    We can use a combined two loss functions with the returned coefficient
-    as like:
-    
-        LOSS = c * f_a + (1 - c) * f_b
-        
-    Where 'c' is the return value of this function.
-    
-    Args:
-        model(torch.Module) A model to get a gradient.
-        objective_a(torch.nn.modules.loss._Loss) A first loss function.
-        objective_b(torch.nn.modules.loss._Loss) A second loss function.
-        a_args(Sequence[torch.Tensor]) A loss-function arguments(tensor ouputs of the model)
-                                        of the objective_a.
-        b_args(Sequence[torch.Tensor]) A loss-function arguments(tensor ouputs of the model)
-                                        of the objective_b.
-         
-    Return:
-        (torch.Tensor) A multi-objective coefficient of two functions.
-        
-    """
-    objective_a(*a_args).mean().backward(retain_graph=True)
-    grad_a = get_gradient_vector(model, **kwargs)
-    try:
-        clean_up_grad([*a_args])
-    except AttributeError:
-        pass
-    model.zero_grad()
-    
-    objective_b(*b_args).mean().backward(retain_graph=True)
-    grad_b = get_gradient_vector(model, **kwargs)
-    try:
-        clean_up_grad([*b_args])
-    except AttributeError: ## Attribute error for the output tensor (No grad)
-        pass
-    model.zero_grad()
-    
-    return get_mtl_min_norm(grad_a, grad_b), grad_a, grad_b
-
-
-def check_mse_efficiency_alpha(gamma, nu, alpha, beta, y, reduction='mean'):
-    """
-    Check the MSE loss (gamma - y)^2 can make negative gradients for alpha, which is
-    a pseudo observation of the normal-inverse-gamma. We can use this to check the MSE
-    loss can success(increase the pseudo observation, alpha).
-    
-    Args:
-        gamma, nu, alpha, beta(torch.Tensor) output values of the evidential network
-        y(torch.Tensor) the ground truth
-    
-    Return:
-        partial f / partial alpha(numpy.array) 
-        where f => the NLL loss (BayesianDTI.loss.MarginalLikelihood)
-    
-    """
-    right = (torch.exp((torch.digamma(alpha+0.5)-torch.digamma(alpha))) - 1)*2*beta*(1+nu) / nu
-    return (right).detach()
-
-
-def check_mse_efficiency_nu(gamma, nu, alpha, beta, y):
-    """
-    Check the MSE loss (gamma - y)^2 can make negative gradients for nu, which is
-    a pseudo observation of the normal-inverse-gamma. We can use this to check the MSE
-    loss can success(increase the pseudo observation, nu).
-    
-    Args:
-        gamma, nu, alpha, beta(torch.Tensor) output values of the evidential network
-        y(torch.Tensor) the ground truth
-    
-    Return:
-        partial f / partial nu(torch.Tensor) 
-        where f => the NLL loss (BayesianDTI.loss.MarginalLikelihood)
-    """
-    nu_1 = (nu+1)/nu
-    return beta*nu_1/alpha
-
-
-def check_mse_efficiency_beta(nu,alpha,beta):
-    nu, alpha, beta = nu.detach(), alpha.detach(), beta.detach()
-    nu_1 = (nu+1)/nu
-    return nu_1*beta/alpha
-
-def share_grad_to_zero(model, pass_param_name=('gamma', 'nu', 'alpha','beta')):
-    """
-    Make gradient vectors of modules in the model be zeros.
-    However, if the name of parameter is in 'pass_param_name', the gradient is not
-    going to be zeros.
-    
-    Args:
-        model(torch.nn.Module) torch module to be gradient-masking.
-        pass_param_name(Sequence(str)) the names of parameters to avoid being zeros.
-        
-    Return:
-        None. The given 'model' will be modified.
-    """
-    for name, module in model.named_modules():
-        if name == '': # Model itself.
-            continue
-            
-        num_children = len(list(module.children()))
-        if num_children == 0:
-            if len(set.intersection(set(name.split('.')),set(pass_param_name))) > 0:
-                pass
-            else:
-                module.zero_grad()
-
-
-def get_grad_dropout_prob(grad_tensors):
-    """
-    Get gradient dropout probability with respect to the sequence tensors.
-    
-    Args:
-        grad_tensors(Sequence(torch.Tensor)) Tensors includes gradients.
-        
-    Return:
-        torch.Tensor, which has the same tensor dimension with input tensors
-    """
-    grad_tensors = torch.stack(grad_tensors)
-    sum_tensors = torch.sum(grad_tensors, axis=0)
-    abs_sum_tensors = torch.sum(torch.abs(grad_tensors), axis=0)
-    
-    grad_dropout_prob = (1 + sum_tensors/abs_sum_tensors)/2
-    
-    if grad_dropout_prob.shape != grad_tensors[0].shape:
-        raise "The final dropout probability shape is different with input tensor shapes"
-    else:
-        return grad_dropout_prob
-    
-    
-def grad_dropout(grad_tensors):
-    """
-    Perform Gradient Sign Dropout algorithm of NIPS2020: 
-    "Just Pick a Sign: Optimizing Deep Multitask Models with Gradient Sign Dropout"
-    
-    Args:
-        grad_tensors(Sequence(torch.Tensor)) Tensors includes gradients.
-    
-    Return:
-        torch.Tensor, which has the same tensor dimension with input tensors.
-        The return tensor represents a new gradient.
-    """
-    new_grad = torch.zeros(grad_tensors[0].shape, device=grad_tensors[0].device)
-    P = get_grad_dropout_prob(grad_tensors)
-    
-    for grad_tensor in grad_tensors:
-        grad_pos = torch.nn.ReLU()(grad_tensor)
-        grad_neg = -torch.nn.ReLU()(-grad_tensor)
-        
-        M = (P > torch.rand(P.shape, device=P.device)).float() * grad_tensor
-        M = M + (P < torch.rand(P.shape, device=P.device)).float() * grad_tensor
-        
-        new_grad += M
-    
-    return new_grad
-
-
-def get_gradient_vector(model, pass_param_name=('')):
+def get_gradient_vector(model, pass_param_name=('nu', 'alpha','beta')):
     """
     Get 1 dimensional gradient vector of the given model.
     
     Args:
         model(torch.nn.Module)
-        
+        pass_param_name(Sequence[Str]): Exclude non-shared parameters. 
     Return:
         torch.FloatTensor - the gradients of weights for the given model
     """
     tensors = []
     for n, w in model.named_parameters():
         if not len(set.intersection(set(n.split('.')),set(pass_param_name))) > 0:
-            #print(n,w)
             tensors.append(w.grad.flatten())
         
     grad = torch.cat(tensors)
     return grad
 
 
-def get_mtl_min_norm(a, b, reverse=False):
-    """
-    For two gradients of two tasks (MSE training, NLL training),
-    get_mtl_min_norm() calculates the linear-combination coefficient which makes
-    the l2 norm gradients are minimum value.
-    
-    If a, b are gradient vectors and c its linear coefficient, the return value c_opt is:
-    
-        c_opt = argmin(c1) ||c*a + (1 - c)*a||_2
-    
-    Where ||X||_2 is L2 norm of X.
-    This optimization problem has the analytical solution, which is implemented in this function.
-    
-    Args:
-        a(torch.Tensor): Gradients of task A.
-        b(torch.Tensor): Gradients of task B.
-        reverse(bool): If true, the larger gradient will be choiced
-            when the gradient a and b are not conflict. 
-    Return:
-        torch.FloatTensor: a scalar value represents 'c_opt' above.
-    """
-    coefficient = torch.clamp(((b - a)@b)/torch.sum((a - b)**2), min=0, max=1)
-    if not reverse:
-        return coefficient
-    else:
-        return 1 - coefficient 
-
-def gradient_scaling(model, alpha):
-    """
-    Scale alpha times the gradients of the models.
-    
-    for ever paramter w,
-        dw/dl = dw/dl * alpha
-    
-    Args:
-        model(torch.nn.Module)
-        alpha(torch.nn.FloatTensor, Float)
-    
-    Return:
-        None
-    """
-    for w in model.parameters():
-        w.grad *= alpha
-
-
-class DTItrainer(ABC):
-    # TODO, or should I?...
-    def train(self, model, dataloader, valid_dataloader, objective_fn, opt,
-                epochs=100, **kwargs):
-        self.total_loss = 0.
-        self.loss_history = []
-        self.valid_loss_history = []
-        self.model = model
-        self.epochs = epochs
-        
-        self.train_loop(epoch, **kwargs)
-            
-    @abstractmethod
-    def train_loop(self, epoch, **kwargs):
-        pass
-    
-    def preconditions(self):
-        pass
-
-
-def mcdrop_nll(y, preds, decay_rate, prob, sample_size, sample_num=5, prior_length_scale=0.01):
+def mcdrop_nll(y, preds, sample_num=5, prior_length_scale=0.01, tau=1.):
     """
     Calculate likelihood for the MC-dropout.
     The 'tau' constant will be calculated as the precision(variance),
@@ -301,12 +64,11 @@ def mcdrop_nll(y, preds, decay_rate, prob, sample_size, sample_num=5, prior_leng
     Returns:
         [float]: The likelihood. 
     """
-    tau = prob*prior_length_scale/(2*sample_size*decay_rate)
-    distance = np.sqrt(((y - preds)**2)) ## (N , T)
-    x1 = np.log(np.sum(np.exp(-0.5*tau*distance), axis=1)) ## (N, 1)
-    x2 = -np.log(sample_num) -0.5*np.log(2*np.pi) -0.5*np.log(1/tau)
+    tau = tau#(1-prob)*(prior_length_scale**2)/(2*decay_rate)
+    distance = (y - preds)**2 ## (N , T)
+    x1 = logsumexp((-0.5*tau*distance), axis=1) ## (N, 1)
+    x2 = -np.log(sample_num) -0.5*np.log(2*np.pi) + 0.5*np.log(tau)
 
-    #print(x1, x1.shape, x2)
     return -np.mean(x1 + x2)
 
 
@@ -377,6 +139,22 @@ def confidence_interval(mu, std, sample_num, confidence=0.9):
     low_interval = mu - h
     up_interval = mu + h
     return low_interval, up_interval
+
+
+def schedule(epoch, lr_init, swag_start, swa_lr_factor=2):
+    """
+    SWA Gaussian learning rate schedule.
+    """
+    swa_lr = lr_init/swa_lr_factor
+    t = (epoch) / (swag_start)
+    lr_ratio = swa_lr / lr_init
+    if t <= 0.5:
+        factor = 1.0
+    elif t <= 0.9:
+        factor = 1.0 - (1.0 - lr_ratio) * (t - 0.5) / 0.4
+    else:
+        factor = lr_ratio
+    return lr_init * factor
 
 
 def plot_predictions(y, preds, std=[], title="Predictions", savefig=None,
@@ -628,9 +406,3 @@ def get_p_values(std, alpha, loc, beta, tensor=True):
 
     """
     return torch.Tensor(gamma.sf(std, alpha, loc, beta))
-
-def mse_coef_with_pvals(nu, alpha, beta):
-    to_npy = lambda x: x.cpu().detach().numpy()
-    uncertainty = to_npy(beta/(alpha-1)/nu)
-    alpha, loc, beta = fit_gamma_std(uncertainty)
-    return get_p_values(uncertainty, alpha, loc, beta)

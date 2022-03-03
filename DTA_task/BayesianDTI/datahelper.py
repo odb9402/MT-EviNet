@@ -20,7 +20,7 @@ from matplotlib.pyplot import cm
 from abc import ABC, abstractmethod
 import random
 import copy
-from BayesianDTI.predictor import PriorNetDTIPredictor
+from BayesianDTI.predictor import EviNetDTIPredictor
 
 ## ######################## ##
 #
@@ -256,50 +256,7 @@ def parse_protein(fpath, prot_len=1000, prot_dict=None, f_format='json'):
     for p in proteins.keys():
         proteins_list.append(label_sequence(proteins[p].upper(), prot_len, prot_dict))
     return proteins_list
-        
 
-#TODO
-class MoleculeTransformerDataset(Dataset):
-    def __init__(self, smiles_file, max_len=100):
-        self.X = []
-        
-        smiles = open(smiles_file, 'r')
-        i = 0 
-        for s_i in smiles:
-            y_i = np.zeros(max_len)#label_smiles(s_i.rstrip(), CHARISOSMILEN, CHARISOSMISET)
-            
-            x_i = list(s_i.rstrip())
-            x_i.insert(0, 'START')
-            x_i.insert(0, 'REP')
-            x_i.append('END')
-            
-            for j in range(2, len(x_i)):
-                if j >= 100:
-                    break
-                if random.random() < 0.15:
-                    if random.random() < 0.8:
-                        try:
-                            y_i[j] = CHARISOSMISET[x_i[j]]
-                        except KeyError:
-                            y_i[j] = CHARISOSMISET['UNK']
-                        x_i[j] = 'MASK'
-                    else:
-                        y_i[j] = random.choice(list(CHARISOSMISET.values()))
-            x_i = label_smiles(x_i, max_len, CHARISOSMISET)
-            if i % 100000 == 0:
-                print(i)
-            
-            self.X.append((x_i, y_i))
-            i += 1
-            
-    def __len__(self):
-        return len(self.X)
-    
-    def __getitem__(self, key):
-        if type(key) == slice:
-            return MoleculeTransformerDataset(self.X[key])
-        return self.X[key]
-        
     
 class DTIDataset(Dataset):
     def __init__(self, smiles, proteins, Y, drug_idx, protein_idx):

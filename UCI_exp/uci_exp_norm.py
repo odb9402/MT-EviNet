@@ -1,3 +1,7 @@
+import sys
+sys.path.append('..')
+from mtevi.mtevi import *
+from mtevi.utils import *
 from sklearn.datasets import load_boston
 from sklearn.model_selection import train_test_split
 from scipy.stats import zscore
@@ -9,15 +13,10 @@ import json
 import math
 import torch
 import itertools
-from utils import *
 import argparse
 import os
 from bayes_opt import BayesianOptimization
 
-#torch.cuda.set_device('cuda:0')
-use_gpu = lambda x=True: torch.set_default_tensor_type(torch.cuda.FloatTensor 
-                                             if torch.cuda.is_available() and x 
-                                             else torch.FloatTensor)
 to_np = lambda tensor: tensor.cpu().detach().numpy()
         
 class EvidentialNetwork(torch.nn.Module):
@@ -48,30 +47,6 @@ class EvidentialNetwork(torch.nn.Module):
     def freeze_mse_weights(self):
         self.fully1.param.require_grad_(False)
         self.gamma.param.require_grad_(False)
-    
-class EvidentialnetMarginalLikelihood(torch.nn.modules.loss._Loss):
-    def __init__(self, size_average=None, reduce=None, reduction: str = 'mean', eps=1e-9):
-        super(EvidentialnetMarginalLikelihood, self).__init__(size_average, reduce, reduction)
-    
-    def forward(self, gamma: torch.Tensor, nu: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor,
-                target: torch.Tensor) -> torch.Tensor:
-        pi = torch.tensor(np.pi)
-        
-        x1 = torch.log(pi/nu)*0.5
-        x2 = -alpha*torch.log(2.*beta*(1.+ nu))
-        x3 = (alpha + 0.5)*torch.log( nu*(target - gamma)**2 + 2.*beta*(1. + nu) )
-        x4 = torch.lgamma(alpha) - torch.lgamma(alpha + 0.5)
-        
-        return x1 + x2 + x3 + x4
-    
-class EvidenceRegularizer(torch.nn.modules.loss._Loss):
-    def __init__(self, size_average=None, reduce=None, reduction: str = 'mean', eps=1e-9, factor=0.1):
-        super(EvidenceRegularizer, self).__init__(size_average, reduce, reduction)
-        self.factor = factor
-    
-    def forward(self, gamma: torch.Tensor, nu: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor,
-                target: torch.Tensor) -> torch.Tensor:
-        return torch.abs(target - gamma)*(2*nu + alpha) * self.factor
 
 
 def get_loader(X, Y, expand_dims=True, **kwargs):
@@ -98,7 +73,8 @@ def get_loader(X, Y, expand_dims=True, **kwargs):
 #############################################################################################
 #############################################################################################
 parser = argparse.ArgumentParser()
-parser.add_argument("-p", "--problem", help="UCI regression problem name")
+parser.add_argument("-p", "--problem", help="UCI regression problem name. It could be one of ['yacht', 'boston','energy'\
+    ,'kin8nm','navel','power','protein','wine','concrete']")
 parser.add_argument("-c", "--cuda", action='store_true', help="cuda on or not", default=False)
 args = parser.parse_args()
 
@@ -188,8 +164,9 @@ for n_exp in range(eval_num):
                 opt.zero_grad()
                 nll = (objective(gamma,nu,alpha,beta,y)).mean()
                 nll += (reg(gamma, nu, alpha, beta, y)).mean()
-                c = get_mse_coef_test(gamma, nu, alpha, beta, y)
-                mse = (objective_mse(gamma, y.float())*c).mean()
+                #c = get_mse_coef_test(gamma, nu, alpha, beta, y)
+                #mse = (objective_mse(gamma, y.float())*c).mean()
+                mse = modified_mse(gamma, nu, alpha, beta, y)
                 loss = nll + mse
                 loss.backward()
                 opt.step()

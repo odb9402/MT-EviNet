@@ -1,3 +1,7 @@
+import sys
+sys.path.append('..')
+from mtevi.mtevi import *
+from mtevi.utils import *
 import numpy as np
 import torch
 import argparse
@@ -9,7 +13,6 @@ from BayesianDTI.utils import *
 from torch.utils.data import Dataset, DataLoader
 from BayesianDTI.datahelper import *
 from BayesianDTI.model import *
-from BayesianDTI.loss import *
 from BayesianDTI.predictor import *
 from scipy.stats import t
 from BayesianDTI.utils import confidence_interval
@@ -82,7 +85,7 @@ if args.model == None:
 else:
     dti_model = torch.load(args.model).to(device)
 
-objective_fn = MarginalLikelihoodLoss()
+objective_fn = EvidentialnetMarginalLikelihood()
 objective_mse = torch.nn.MSELoss()
 
 regularizer = EvidenceRegularizer(factor=args.reg).to(device)
@@ -118,7 +121,7 @@ for epoch in range(args.epochs):
             if args.abl:
                 mse = objective_mse(gamma, y)
             else:
-                mse = modified_mse(gamma, nu, alpha, beta, y, batch_reduce='min')
+                mse = modified_mse(gamma, nu, alpha, beta, y)
             total_mse += mse.item()
             loss += mse
         loss.backward()
@@ -174,7 +177,7 @@ plt.savefig(dir + "/MultitaskLoss.png")
 ##########################################################################
 ### Evaluation
 import torch.distributions.studentT as studentT
-predictor = PriorNetDTIPredictor()
+predictor = EviNetDTIPredictor()
 
 eval_model = torch.load(dir + '/dti_model_best.model').to(device)
    
